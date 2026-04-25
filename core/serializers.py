@@ -2,6 +2,7 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import Chat, Message
 
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
 
@@ -19,6 +20,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         )
         return user
 
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -30,9 +32,23 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = ('id', 'role', 'content', 'created_at')
 
+
 class ChatSerializer(serializers.ModelSerializer):
     messages = MessageSerializer(many=True, read_only=True)
 
     class Meta:
         model = Chat
         fields = ('id', 'title', 'created_at', 'messages')
+
+
+class ChatCreateSerializer(serializers.Serializer):
+    """Validates the project form data POSTed to /api/chats/."""
+    description = serializers.CharField()
+    framework = serializers.CharField(required=False, allow_blank=True, default='')
+    platform = serializers.CharField()
+    requirements = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class FollowUpMessageSerializer(serializers.Serializer):
+    """Validates a follow-up message POSTed to /api/chats/:id/message/."""
+    content = serializers.CharField()
