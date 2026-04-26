@@ -1,11 +1,10 @@
 import os
 import json
 
-from google import genai
-from google.genai import types
+from groq import Groq
 
 # ---------------------------------------------------------------------------
-# Expected JSON response schema from Gemini:
+# Response JSON schema:
 # {
 #   "hld": { "overview": str, "components": str, "data_flow": str },
 #   "lld": { "models": str, "endpoints": str, "folder_structure": str },
@@ -18,7 +17,7 @@ from google.genai import types
 # }
 # ---------------------------------------------------------------------------
 
-MODEL = "gemini-1.5-flash"
+MODEL = "llama-3.3-70b-versatile"
 
 SYSTEM_INSTRUCTION = (
     "You are a Senior Solutions Architect and a senior Full Stack developer. "
@@ -37,14 +36,21 @@ SYSTEM_INSTRUCTION = (
     "Return **only** a valid JSON object, without markdown code fences or explanations."
 )
 
+FOLLOWUP_SYSTEM_INSTRUCTION = (
+    "You are a Senior Solutions Architect and Full Stack developer helping a user refine "
+    "their software project plan. The conversation history contains the original project "
+    "description and the structured plan you generated. Answer the user's follow-up questions "
+    "or apply requested changes clearly and helpfully."
+)
 
-def _get_client() -> genai.Client:
-    """Return a configured Gemini client."""
-    return genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+def _get_client() -> Groq:
+    """Return a configured Groq client."""
+    return Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
 def _strip_code_fences(text: str) -> str:
-    """Strip markdown code fences that Gemini sometimes wraps JSON in."""
+    """Strip markdown code fences that LLMs sometimes wrap JSON in."""
     text = text.strip()
     if text.startswith("```"):
         # Remove opening fence (e.g. ```json or ```)
@@ -56,7 +62,7 @@ def _strip_code_fences(text: str) -> str:
 
 def generate_project_plan(form_data: dict) -> dict:
     """
-    Call Gemini to generate a full structured project plan from form data.
+    Call Groq to generate a full structured project plan from form data.
 
     form_data keys: description, framework (optional), platform, requirements (optional)
 
@@ -79,19 +85,21 @@ def generate_project_plan(form_data: dict) -> dict:
     if requirements:
         user_prompt += f"\nSpecific Requirements / Constraints: {requirements}"
 
+    messages = [
+        {"role": "system", "content": SYSTEM_INSTRUCTION},
+        {"role": "user",   "content": user_prompt},
+    ]
+
     try:
         client = _get_client()
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.4,
-            ),
+            messages=messages,
+            temperature=0.4,
         )
-        raw_text = response.text
+        raw_text = response.choices[0].message.content
 
-        # Strip markdown fences before parsing (common Gemini gotcha)
+        # Strip markdown fences before parsing
         cleaned = _strip_code_fences(raw_text)
         parsed = json.loads(cleaned)
 
@@ -100,27 +108,27 @@ def generate_project_plan(form_data: dict) -> dict:
     except json.JSONDecodeError as e:
         return {
             "success": False,
-            "error": f"Gemini returned invalid JSON: {str(e)}",
+            "error": f"Groq returned invalid JSON: {str(e)}",
         }
     except Exception as e:
         error_message = str(e)
-        if "429" in error_message or "quota" in error_message.lower() or "rate" in error_message.lower():
+        if "429" in error_message or "rate" in error_message.lower() or "quota" in error_message.lower():
             return {
                 "success": False,
-                "error": "Gemini API rate limit reached. Please wait a moment and try again.",
+                "error": "Groq API rate limit reached. Please wait a moment and try again.",
             }
         return {
             "success": False,
-            "error": f"Gemini API error: {error_message}",
+            "error": f"Groq API error: {error_message}",
         }
 
 
 def send_followup_message(chat_messages: list, user_message: str) -> dict:
     """
-    Send a follow-up message to Gemini using the full conversation history for context.
+    Send a follow-up message to Groq using the full conversation history for context.
 
-    Uses the new google-genai SDK's multi-turn approach: builds a list of
-    Content objects from existing DB messages and appends the new user message.
+    Groq uses OpenAI-style roles: "system", "user", "assistant".
+    DB already stores "user" and "assistant" — no role mapping needed.
 
     chat_messages: list of Message model instances (ordered by created_at).
     user_message:  The plain-text content of the new user message.
@@ -130,42 +138,32 @@ def send_followup_message(chat_messages: list, user_message: str) -> dict:
         or
         { "success": False, "error": "<message>" }
     """
-    # Build the conversation history as Content objects
-    # Gemini uses "user" and "model" roles (not "assistant")
-    contents = []
-    for msg in chat_messages:
-        role = "model" if msg.role == "assistant" else "user"
-        contents.append(
-            types.Content(
-                role=role,
-                parts=[types.Part.from_text(text=msg.content)],
-            )
-        )
+    # Start with a system message to set the follow-up context
+    messages = [{"role": "system", "content": FOLLOWUP_SYSTEM_INSTRUCTION}]
 
-    # Append the new user message at the end
-    contents.append(
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=user_message)],
-        )
-    )
+    # Append full conversation history — roles map directly from DB ("user"/"assistant")
+    for msg in chat_messages:
+        messages.append({"role": msg.role, "content": msg.content})
+
+    # Append the new user message
+    messages.append({"role": "user", "content": user_message})
 
     try:
         client = _get_client()
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL,
-            contents=contents,
+            messages=messages,
         )
-        return {"success": True, "data": response.text}
+        return {"success": True, "data": response.choices[0].message.content}
 
     except Exception as e:
         error_message = str(e)
-        if "429" in error_message or "quota" in error_message.lower() or "rate" in error_message.lower():
+        if "429" in error_message or "rate" in error_message.lower() or "quota" in error_message.lower():
             return {
                 "success": False,
-                "error": "Gemini API rate limit reached. Please wait a moment and try again.",
+                "error": "Groq API rate limit reached. Please wait a moment and try again.",
             }
         return {
             "success": False,
-            "error": f"Gemini API error: {error_message}",
+            "error": f"Groq API error: {error_message}",
         }

@@ -16,7 +16,7 @@ from .serializers import (
     FollowUpMessageSerializer,
 )
 from .models import Chat, Message, DailyUsage
-from .services.gemini import generate_project_plan, send_followup_message
+from .services.groq_service import generate_project_plan, send_followup_message
 
 
 class RegisterView(generics.CreateAPIView):
